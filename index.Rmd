@@ -2,29 +2,155 @@
 title: "Practical Machine Learning Course Project"
 author: "Jeff Holycross"
 date: "5/17/2020"
-output: html_document
+output:
+  html_document: 
+    keep_md: yes
+    
+references:
+- id: fuks2013
+  title: Qualitative Activity Recognition of Weight Lifting Exercises
+  author:
+  - family: Velloso
+    given: E. 
+  - family: Bulling
+    given: A.
+  - family: Gellersen
+    given: H.
+  - family: Ugulino, 
+    given: W.
+  - family: Fuks
+    given: H.
+  container-title: Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13)
+  address: Stuttgart, Germany
+  journaltitle: ACM SIGCHI
+  type: article-journal
+  issued:
+    year: 2013
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, fig.path='figures/',
+                      include=FALSE, warning=FALSE, message=FALSE)
 ```
 
-## R Markdown
+## Introduction
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+This is an R Markdown document for the report for the Course Project in the Practical Machine Learning course on Coursera. 
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+## Data
 
-```{r cars}
-summary(cars)
+The data for this assignment, as is common with Machine Learning, was split into testing and training sets and can be downloaded from the course web site:
+
+* Dataset: [Training dataset](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv) [11.6M]
+* Dataset: [Testing dataset](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv) [15K]
+
+The data for this assignment was generously provided from [this source](http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har) [@fuks2013]
+
+The purpose of this assignment is to predict what type of exercise (the "classe" variable in the dataset) was being performed based on activity tracker information.
+
+## Loading and pre-processing the data
+
+The training and testing data was loaded from the provided CSV files.  
+
+```{r loading}
+require(caret)
+training = read.csv("../pml-training.csv")
+testing = read.csv("../pml-testing.csv")
 ```
 
-## Including Plots
+After looking at the training set, the X columns was removed as it is just the index, the user_name column was removed for possible bias in the model, all timestamp columns were removed to remove time as an influence on the model, and the new_window and num_window columns were also removed to eliminate possible bias from those columns on the models.
 
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r loading2}
+drop_columns <- names(training)[1:7]
+training <- training[, !(names(training) %in% drop_columns)]
+testing <- testing[, !(names(testing) %in% drop_columns)]
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+The training and test data sets provided also contain extensive amounts of NA values. However, some columns were found to have blanks ("") instead of NA values. A further analysis of these columns revealed that some (like kurtosis_picth_forearm) had very few valid values and were assessed to have limited predictive value when they did contain valid values. Columns that were significantly NA or blank were removed. The same pre-processing was applied to the testing set.
+
+As a result the following columns were **kept** for further analysis:
+```{r removing_nas1, echo=FALSE, include=TRUE}
+training[training==""]<-NA
+training <- training[, colSums(is.na(training)) == 0]
+testing[testing==""]<-NA
+testing <- testing[, colSums(is.na(testing)) == 0]
+names(training)
+```
+
+## Setting up cross validation
+
+The training set is very large (19,622 rows) while the final testing set is very small (20 rows). As a result, predicting the out of sample error would best be done by using cross-validation to perform testing on a subset of the original "training" set.
+
+K-fold cross-validation was chosen with k=5. A known seed was set before setting the trainControl. In addition, the "training" set was partitioned into a "training" set and a "validation" set, so that the "validation" set could be used to validate the model before applying to the "testing" set.
+
+```{r cross_validation}
+## Setup validation and testing set
+set.seed(1138)
+inTrain <- createDataPartition(y=training$classe,
+                               p=0.9, list=FALSE)
+training <- training[inTrain,]
+validation <- training[-inTrain,]
+
+## Configure parallel processing
+library(parallel)
+library(doParallel)
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+
+## Define the training control with a known seed
+set.seed(1138)
+k_fold_cv <- trainControl(method="cv", number = 5, allowParallel = TRUE)
+```
+
+## Model Execution
+
+A random forest was selected for the analysis method in the hopes that it would provide the best combination of processing time and effectivness in prediction. A known seed was set before running the model.
+
+```{r model_1, cache=TRUE}
+## Run a random forest
+set.seed(1138)
+mod2 <- train(classe ~ .,method="rf",data=training,trControl=k_fold_cv)
+```
+
+As hoped, the model's OOB estimate error rate is a mere 0.49%.
+
+```{r model_2, echo=TRUE, eval=FALSE, include=TRUE}
+Call:
+ randomForest(x = x, y = y, mtry = param$mtry) 
+               Type of random forest: classification
+                     Number of trees: 500
+No. of variables tried at each split: 2
+
+        OOB estimate of  error rate: 0.49%
+Confusion matrix:
+     A    B    C    D    E  class.error
+A 5020    2    0    0    0 0.0003982477
+B   11 3401    6    0    0 0.0049736688
+C    0   19 3058    3    0 0.0071428571
+D    0    0   39 2854    2 0.0141623489
+E    0    0    0    4 3243 0.0012319064
+```
+
+And predicting against the validation set confirms that the predictions are accurate. In fact, not a single prediction is missed!
+
+```{r model_3, echo=FALSE, include=TRUE}
+pred2 <- predict(mod2,validation)
+validation$id <- as.numeric(row.names(validation))
+table(pred2,validation$classe)
+validation$predRight <- pred2==validation$classe
+qplot(id,id,colour=predRight,data=validation,main="Validation Set Predictions")
+```
+Note: The validation set appears to range from 0 to nearly 20,000 because of the way that the validation set was created as part of the training set. The original row.names values from the training set carries over, such that the row.names values range from 8 to 19620, even though there are only 1765 rows in the set.
+
+```{r model_4}
+stopCluster(cluster)
+registerDoSEQ()
+```
+
+## Summary
+
+By assessing the data in advance, recognizing that certain columns had limited to no predictive value, and pre-processing the training dataset in order to remove the identified columns, the resulting random forest model has an extremely high accuracy rate with an OOB expected error of only 0.49%!  Further, by splitting the provided training set into a training set and a validation set, the author was able to sanity check and confirm that the error rate was indeed low, as no errors were found among the validation set.
+
+As well, this pre-processing and elimination of these unnecessary columns were essential in not only reducing the processing time of the random forest model, but also of preventing the author's computer from becoming unusuable during the model's training.
+
+## References
